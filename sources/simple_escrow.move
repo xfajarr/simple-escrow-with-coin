@@ -1,15 +1,8 @@
 module escrow::simple_escrow {
-    use sui::balance;
-    use sui::balance::Balance;
-    use sui::coin;
-    use sui::coin::Coin;
-    use sui::object::{Self, UID};
-    use sui::transfer;
-    use sui::tx_context::TxContext;
+    use sui::balance::{Self, Balance};
+    use sui::coin::{Self, Coin};
 
     /// Escrow untuk swap antara dua tipe koin berbeda.
-    /// DepositCoinType: tipe koin yang di-deposit oleh seller
-    /// PaymentCoinType: tipe koin yang harus dibayar oleh buyer
     public struct Escrow<phantom DepositCoinType, phantom PaymentCoinType> has key, store {
         id: UID,
         deposit: Balance<DepositCoinType>,
@@ -18,8 +11,7 @@ module escrow::simple_escrow {
         creator: address,
     }
 
-    /// Seller kunci koin miliknya (DepositCoinType), tentukan jumlah PaymentCoinType yang diminta dari buyer.
-    /// Contoh: Seller deposit TBTC, minta zSUI sebagai pembayaran.
+    /// Seller deposit koin dan tentukan jumlah pembayaran yang diminta.
     public entry fun create_escrow<DepositCoinType, PaymentCoinType>(
         deposit_coin: Coin<DepositCoinType>,
         request_amount: u64,
@@ -27,66 +19,57 @@ module escrow::simple_escrow {
     ) {
         let escrow = Escrow<DepositCoinType, PaymentCoinType> {
             id: object::new(ctx),
-            deposit: coin::into_balance(deposit_coin),
+            deposit: deposit_coin.into_balance(),
             requested_amount: request_amount,
-            receive: balance::zero<PaymentCoinType>(),
+            receive: balance::zero(),
             creator: ctx.sender(),
         };
-
         transfer::public_transfer(escrow, ctx.sender());
     }
 
-    /// Buyer kirim koin PaymentCoinType sesuai request, langsung menerima deposit DepositCoinType dari seller.
-    /// Contoh: Buyer bayar zSUI, terima TBTC dari escrow.
+    /// Buyer bayar dan terima deposit.
+    /// Buyer bisa kirim coin >= requested_amount, sisa akan di-refund otomatis.
     public entry fun accept_escrow<DepositCoinType, PaymentCoinType>(
         escrow: &mut Escrow<DepositCoinType, PaymentCoinType>,
-        payment: Coin<PaymentCoinType>,
+        mut payment: Coin<PaymentCoinType>,
         ctx: &mut TxContext,
     ) {
-        assert!(coin::value(&payment) == escrow.requested_amount, 0);
+        let payment_value = payment.value();
+        assert!(payment_value >= escrow.requested_amount, 0);
 
-        balance::join(&mut escrow.receive, coin::into_balance(payment));
-        let deposit_balance = balance::withdraw_all(&mut escrow.deposit);
-        let deposit_coin = coin::from_balance(deposit_balance, ctx);
-        transfer::public_transfer(deposit_coin, ctx.sender());
+        // Split exact amount, refund sisanya
+        let exact_payment = payment.split(escrow.requested_amount, ctx);
+        if (payment.value() > 0) {
+            transfer::public_transfer(payment, ctx.sender()); // refund sisa
+        } else {
+            payment.destroy_zero(); // tidak ada sisa
+        };
+
+        // Simpan pembayaran di escrow
+        escrow.receive.join(exact_payment.into_balance());
+
+        // Transfer deposit ke buyer
+        transfer::public_transfer(coin::from_balance(escrow.deposit.withdraw_all(), ctx), ctx.sender());
     }
 
-    /// Seller tarik pembayaran PaymentCoinType yang sudah diterima dari buyer.
+    /// Seller tarik pembayaran yang diterima.
     public entry fun complete_escrow<DepositCoinType, PaymentCoinType>(
         escrow: &mut Escrow<DepositCoinType, PaymentCoinType>,
         ctx: &mut TxContext,
     ) {
-        assert!(ctx.sender() == escrow.creator, 2);
-        let receive_balance = balance::withdraw_all(&mut escrow.receive);
-        let payout = coin::from_balance(receive_balance, ctx);
-        transfer::public_transfer(payout, ctx.sender());
+        assert!(ctx.sender() == escrow.creator, 1);
+        transfer::public_transfer(coin::from_balance(escrow.receive.withdraw_all(), ctx), ctx.sender());
     }
 
-    /// Seller batalkan escrow, deposit dikembalikan ke seller.
-    /// Hanya bisa dibatalkan jika belum ada pembayaran dari buyer.
+    /// Seller batalkan escrow (hanya jika belum ada pembayaran).
     public entry fun cancel_escrow<DepositCoinType, PaymentCoinType>(
         escrow: Escrow<DepositCoinType, PaymentCoinType>,
         ctx: &mut TxContext,
     ) {
-        assert!(ctx.sender() == escrow.creator, 3);
-
-        let Escrow {
-            id,
-            mut deposit,
-            mut receive,
-            requested_amount: _,
-            creator: _,
-        } = escrow;
-
-        // Pastikan tidak ada pembayaran yang tertahan
-        let recv_all = balance::withdraw_all(&mut receive);
-        balance::destroy_zero(recv_all);
-        balance::destroy_zero(receive);
-
-        let deposit_all = balance::withdraw_all(&mut deposit);
-        balance::destroy_zero(deposit);
-        let coin_out = coin::from_balance(deposit_all, ctx);
+        assert!(ctx.sender() == escrow.creator, 2);
+        let Escrow { id, deposit, requested_amount: _, receive, creator: _ } = escrow;
+        receive.destroy_zero(); // Fails if buyer already paid
         object::delete(id);
-        transfer::public_transfer(coin_out, ctx.sender());
+        transfer::public_transfer(coin::from_balance(deposit, ctx), ctx.sender());
     }
 }
