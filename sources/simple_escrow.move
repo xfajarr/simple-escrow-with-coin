@@ -3,12 +3,15 @@ module escrow::simple_escrow {
     use sui::balance::Balance;
     use sui::coin;
     use sui::coin::Coin;
+    use sui::object::{Self, UID};
+    use sui::transfer;
+    use sui::tx_context::TxContext;
 
     /// Escrow untuk swap antara dua tipe koin berbeda.
     /// DepositCoinType: tipe koin yang di-deposit oleh seller
     /// PaymentCoinType: tipe koin yang harus dibayar oleh buyer
-    public struct Escrow<phantom DepositCoinType: store, phantom PaymentCoinType: store> has key, store {
-        id: object::UID,
+    public struct Escrow<phantom DepositCoinType, phantom PaymentCoinType> has key, store {
+        id: UID,
         deposit: Balance<DepositCoinType>,
         requested_amount: u64,
         receive: Balance<PaymentCoinType>,
@@ -17,7 +20,7 @@ module escrow::simple_escrow {
 
     /// Seller kunci koin miliknya (DepositCoinType), tentukan jumlah PaymentCoinType yang diminta dari buyer.
     /// Contoh: Seller deposit TBTC, minta zSUI sebagai pembayaran.
-    public entry fun create_escrow<DepositCoinType: store, PaymentCoinType: store>(
+    public entry fun create_escrow<DepositCoinType, PaymentCoinType>(
         deposit_coin: Coin<DepositCoinType>,
         request_amount: u64,
         ctx: &mut TxContext,
@@ -35,7 +38,7 @@ module escrow::simple_escrow {
 
     /// Buyer kirim koin PaymentCoinType sesuai request, langsung menerima deposit DepositCoinType dari seller.
     /// Contoh: Buyer bayar zSUI, terima TBTC dari escrow.
-    public entry fun accept_escrow<DepositCoinType: store, PaymentCoinType: store>(
+    public entry fun accept_escrow<DepositCoinType, PaymentCoinType>(
         escrow: &mut Escrow<DepositCoinType, PaymentCoinType>,
         payment: Coin<PaymentCoinType>,
         ctx: &mut TxContext,
@@ -49,7 +52,7 @@ module escrow::simple_escrow {
     }
 
     /// Seller tarik pembayaran PaymentCoinType yang sudah diterima dari buyer.
-    public entry fun complete_escrow<DepositCoinType: store, PaymentCoinType: store>(
+    public entry fun complete_escrow<DepositCoinType, PaymentCoinType>(
         escrow: &mut Escrow<DepositCoinType, PaymentCoinType>,
         ctx: &mut TxContext,
     ) {
@@ -61,7 +64,7 @@ module escrow::simple_escrow {
 
     /// Seller batalkan escrow, deposit dikembalikan ke seller.
     /// Hanya bisa dibatalkan jika belum ada pembayaran dari buyer.
-    public entry fun cancel_escrow<DepositCoinType: store, PaymentCoinType: store>(
+    public entry fun cancel_escrow<DepositCoinType, PaymentCoinType>(
         escrow: Escrow<DepositCoinType, PaymentCoinType>,
         ctx: &mut TxContext,
     ) {
